@@ -58,14 +58,14 @@ def get_download_path_and_name(data, prefix, with_watermark, config):
     if create_time:
         from datetime import datetime
         try:
-            create_time = datetime.fromtimestamp(int(create_time)).strftime('%Y-%m-%d_%H-%M-%S')
+            create_time = datetime.fromtimestamp(int(create_time)).strftime('%Y-%m-%d')
         except Exception:
             pass
     file_prefix = config.get("API").get("Download_File_Prefix") if prefix else ''
     download_path = os.path.join(config.get("API").get("Download_Path"), f"{platform}_{data_type}")
     os.makedirs(download_path, exist_ok=True)
     if data_type == 'video':
-        file_name = f"{create_time}_{aweme_id}_{desc}.mp4" if not with_watermark else f"{file_prefix}{platform}_{aweme_id}_watermark.mp4"
+        file_name = f"{create_time}_{desc}.mp4" if not with_watermark else f"{file_prefix}{platform}_{aweme_id}_watermark.mp4"
         file_path = os.path.join(download_path, file_name)
         return data_type, file_path, file_name, download_path
     elif data_type == 'image':

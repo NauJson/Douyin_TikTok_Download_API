@@ -1207,7 +1207,7 @@ async def batch_download_by_txt(request: Request):
                 if isinstance(result, FileResponse):
                     # FileResponse: 拷贝文件到目标路径
                     src_path = result.path
-                    shutil.copyfile(src_path, file_path)
+                    # shutil.copyfile(src_path, file_path)
                     logger.info(f"aweme_id: {aweme_id} 下载成功: {filename}")
                     download_results.append({"aweme_id": aweme_id, "status": "success", "file": filename})
                 elif isinstance(result, bytes):
