@@ -392,3 +392,36 @@ def merge_config(
             merged_conf[key] = value  # CLI 参数会覆盖自定义配置和主配置中的同名参数
 
     return merged_conf
+
+
+
+def update_ttwid_in_cookie(config_path: str, key_path: list, new_ttwid: str):
+    """
+    只替换 yaml 配置文件中 Cookie 字符串里的 ttwid 字段，保留其他内容。
+    :param config_path: 配置文件路径
+    :param key_path: 字段路径，例如 ["TokenManager", "douyin", "headers", "Cookie"]
+    :param new_ttwid: 新的 ttwid 值
+    """
+    import yaml
+    import re
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        d = config
+        for key in key_path[:-1]:
+            d = d[key]
+        cookie_str = d.get(key_path[-1], "")
+        # 替换 ttwid=xxx
+        if "ttwid=" in cookie_str:
+            new_cookie_str = re.sub(r'ttwid=[^;]*', f'ttwid={new_ttwid}', cookie_str)
+        else:
+            # 如果没有 ttwid 字段，则追加
+            if cookie_str and not cookie_str.endswith(';'):
+                new_cookie_str = cookie_str + f'; ttwid={new_ttwid}'
+            else:
+                new_cookie_str = cookie_str + f'ttwid={new_ttwid}'
+        d[key_path[-1]] = new_cookie_str
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.safe_dump(config, f, allow_unicode=True)
+    except Exception as e:
+        print(f"只替换 ttwid 失败：{e}")

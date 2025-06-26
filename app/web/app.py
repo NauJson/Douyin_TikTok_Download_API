@@ -8,7 +8,7 @@ from pywebio.output import *
 
 from app.web.views.About import about_pop_window
 from app.web.views.Document import api_document_pop_window
-from app.web.views.Downloader import downloader_pop_window
+from app.web.views.Downloader import downloader_pop_window, download_user_all_videos_pop_window
 from app.web.views.EasterEgg import a
 from app.web.views.ParseVideo import parse_video
 from app.web.views.Shortcuts import ios_pop_window
@@ -76,6 +76,8 @@ class MainView:
                 self.utils.t('🔍解析用户主页视频', '🔍Parse User Homepage Video'),
                 # Index: 2
                 self.utils.t('🥚小彩蛋', '🥚Easter Egg'),
+                # Index: 3 新增一键下载用户主页全部视频
+                self.utils.t('⬇️一键下载用户主页全部视频', '⬇️Batch Download All User Videos'),
             ]
             select_options = select(
                 self.utils.t('请在这里选择一个你想要的功能吧 ~', 'Please select a function you want here ~'),
@@ -90,3 +92,5 @@ class MainView:
                 put_markdown(self.utils.t('暂未开放，敬请期待~', 'Not yet open, please look forward to it~'))
             elif select_options == options[2]:
                 a() if _config['Web']['Easter_Egg'] else put_markdown(self.utils.t('没有小彩蛋哦~', 'No Easter Egg~'))
+            elif select_options == options[3]:
+                download_user_all_videos_pop_window()

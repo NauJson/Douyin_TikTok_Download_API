@@ -4,6 +4,14 @@ from fastapi import APIRouter, Body, Query, Request, HTTPException  # 导入Fast
 from app.api.models.APIResponseModel import ResponseModel, ErrorResponseModel  # 导入响应模型
 
 from crawlers.douyin.web.web_crawler import DouyinWebCrawler  # 导入抖音Web爬虫
+from crawlers.utils.utils import update_ttwid_in_cookie
+
+import os
+import aiofiles
+import httpx
+import yaml
+import asyncio
+import random
 
 
 router = APIRouter()
@@ -1068,3 +1076,79 @@ async def get_all_webcast_id(request: Request,
                                     params=dict(request.query_params),
                                     )
         raise HTTPException(status_code=status_code, detail=detail.dict())
+
+
+# 一键下载用户主页全部视频
+@router.post("/download_user_all_videos", response_model=ResponseModel, summary="一键下载用户主页全部视频/Batch download all user homepage videos")
+async def download_user_all_videos(request: Request, url: str = Body(..., embed=True, description="用户主页链接/User homepage url")):
+    """
+    一键下载用户主页全部视频
+    1. 生成ttwid
+    2. 获取sec_user_id
+    3. 分页获取所有aweme_id
+    4. 下载所有视频到本地
+    """
+    try:
+        # 1. 生成 ttwid（如有必要，部分接口可能用不到）
+        # ttwid = (await DouyinWebCrawler.gen_ttwid())["ttwid"]
+        # ttwid = "1%7C87VqQwWnWrKR_A85hkZLcVIBb4lFtryFsSKv98SjdDw%7C1750898330%7Cc47363af03d87bea1865ce232ff8ee59f9158956f8575868552be6941c858b99"
+
+        # 写入 ttwid 到根目录 config.yaml
+        # config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'crawlers', 'douyin', 'web', 'config.yaml')
+        # update_ttwid_in_cookie(config_path, ["TokenManager", "douyin", "headers", "Cookie"], ttwid)
+
+        # print("ttwid：", ttwid)
+        # 2. 获取 sec_user_id
+        sec_user_id_data = await DouyinWebCrawler.get_sec_user_id(url)
+        if isinstance(sec_user_id_data, dict):
+            sec_user_id = sec_user_id_data.get("sec_user_id") or sec_user_id_data.get("data") or sec_user_id_data.get("result") or sec_user_id_data
+        else:
+            sec_user_id = sec_user_id_data
+        if not sec_user_id:
+            return ErrorResponseModel(code=400, message="未能提取sec_user_id", router=request.url.path, params={"url": url})
+
+        # 3. 分页获取所有aweme_id
+        video_brief_list = []
+        max_cursor = 0
+        while True:
+            delay = random.uniform(0, 1)
+            print(f"[延迟开始] 本次延迟 {delay:.3f} 秒")
+            await asyncio.sleep(delay)
+            print(f"[延迟结束] ")
+            data = await DouyinWebCrawler.fetch_user_post_videos(sec_user_id, max_cursor, 100)
+            aweme_list = data.get("aweme_list", [])
+            if not aweme_list:
+                break
+            current_count = len(aweme_list)
+            for item in aweme_list:
+                aweme_id = item.get("aweme_id", "")
+                desc = item.get("desc", "")
+                item_title = item.get("item_title", "")
+                video_brief_list.append({
+                    "aweme_id": aweme_id,
+                    "desc": desc,
+                    "item_title": item_title
+                })
+            print(f"[进度] 本次获得 {current_count} 个视频，总计 {len(video_brief_list)} 个视频")
+            if not data.get("has_more"):
+                break
+            max_cursor = data.get("max_cursor", 0)
+
+        # 打印获得的用户视频列表
+        print("用户视频列表：", video_brief_list)
+
+        # 将视频信息写入文件
+        import json
+
+        # 构建文件路径
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        filename = f"{sec_user_id}.txt"
+        filepath = os.path.join(current_dir, filename)
+
+        # 将info写入文件
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(video_brief_list, f, ensure_ascii=False, indent=2)
+
+        return ResponseModel(code=200, router=request.url.path, data=video_brief_list)
+    except Exception as e:
+        return ErrorResponseModel(code=500, message=str(e), router=request.url.path, params={"url": url})
