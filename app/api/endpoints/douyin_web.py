@@ -1199,7 +1199,7 @@ async def batch_download_by_txt(request: Request):
                 import asyncio
                 
                 # 随机停顿1-3秒
-                sleep_time = random.uniform(1, 3)
+                sleep_time = random.uniform(1, 5)
                 logger.info(f"aweme_id: {aweme_id} 随机停顿 {sleep_time:.2f} 秒")
                 await asyncio.sleep(sleep_time)
                 # 只保存文件，不返回 FileResponse
