@@ -48,6 +48,72 @@ async def fetch_data_stream(url: str, request:Request , headers: dict = None, fi
                     await out_file.write(chunk)
             return True
 
+def get_download_path_and_name(data, prefix, with_watermark, config):
+    data_type = data.get('type')
+    platform = data.get('platform')
+    aweme_id = data.get('aweme_id')
+    desc = data.get('desc')
+    file_prefix = config.get("API").get("Download_File_Prefix") if prefix else ''
+    download_path = os.path.join(config.get("API").get("Download_Path"), f"{platform}_{data_type}")
+    os.makedirs(download_path, exist_ok=True)
+    if data_type == 'video':
+        file_name = f"{file_prefix}{platform}_{aweme_id}_{desc}.mp4" if not with_watermark else f"{file_prefix}{platform}_{aweme_id}_watermark.mp4"
+        file_path = os.path.join(download_path, file_name)
+        return data_type, file_path, file_name, download_path
+    elif data_type == 'image':
+        zip_file_name = f"{file_prefix}{platform}_{aweme_id}_images.zip" if not with_watermark else f"{file_prefix}{platform}_{aweme_id}_images_watermark.zip"
+        zip_file_path = os.path.join(download_path, zip_file_name)
+        return data_type, zip_file_path, zip_file_name, download_path
+    else:
+        return data_type, None, None, download_path
+
+async def download_file_common(request, url, prefix, with_watermark, config):
+    try:
+        data = await HybridCrawler.hybrid_parsing_single_video(url, minimal=True)
+    except Exception as e:
+        code = 400
+        return ErrorResponseModel(code=code, message=str(e), router=request.url.path, params=dict(request.query_params))
+
+    try:
+        data_type, file_path, file_name, download_path = get_download_path_and_name(data, prefix, with_watermark, config)
+        if data_type == 'video':
+            if os.path.exists(file_path):
+                return FileResponse(path=file_path, media_type='video/mp4', filename=file_name)
+            video_url = data.get('video_data').get('nwm_video_url_HQ') if not with_watermark else data.get('video_data').get('wm_video_url_HQ')
+            __headers = await HybridCrawler.TikTokWebCrawler.get_tiktok_headers() if data.get('platform') == 'tiktok' else await HybridCrawler.DouyinWebCrawler.get_douyin_headers()
+            success = await fetch_data_stream(video_url, request, headers=__headers, file_path=file_path)
+            if not success:
+                raise HTTPException(status_code=500, detail="An error occurred while fetching data")
+            return FileResponse(path=file_path, filename=file_name, media_type="video/mp4")
+        elif data_type == 'image':
+            if os.path.exists(file_path):
+                return FileResponse(path=file_path, filename=file_name, media_type="application/zip")
+            urls = data.get('image_data').get('no_watermark_image_list') if not with_watermark else data.get('image_data').get('watermark_image_list')
+            image_file_list = []
+            file_prefix = config.get("API").get("Download_File_Prefix") if prefix else ''
+            platform = data.get('platform')
+            aweme_id = data.get('aweme_id')
+            for url_img in urls:
+                response = await fetch_data(url_img)
+                index = int(urls.index(url_img))
+                content_type = response.headers.get('content-type')
+                file_format = content_type.split('/')[1]
+                img_file_name = f"{file_prefix}{platform}_{aweme_id}_{index + 1}.{file_format}" if not with_watermark else f"{file_prefix}{platform}_{aweme_id}_{index + 1}_watermark.{file_format}"
+                img_file_path = os.path.join(download_path, img_file_name)
+                image_file_list.append(img_file_path)
+                async with aiofiles.open(img_file_path, 'wb') as out_file:
+                    await out_file.write(response.content)
+            with zipfile.ZipFile(file_path, 'w') as zip_file:
+                for image_file in image_file_list:
+                    zip_file.write(image_file, os.path.basename(image_file))
+            return FileResponse(path=file_path, filename=file_name, media_type="application/zip")
+        else:
+            return ErrorResponseModel(code=400, message="不支持的数据类型", router=request.url.path, params=dict(request.query_params))
+    except Exception as e:
+        print(e)
+        code = 400
+        return ErrorResponseModel(code=code, message=str(e), router=request.url.path, params=dict(request.query_params))
+
 @router.get("/download", summary="在线下载抖音|TikTok视频/图片/Online download Douyin|TikTok video/image")
 async def download_file_hybrid(request: Request,
                                url: str = Query(
@@ -92,91 +158,4 @@ async def download_file_hybrid(request: Request,
         return ErrorResponseModel(code=code, message=message, router=request.url.path,
                                   params=dict(request.query_params))
 
-    # 开始解析数据/Start parsing data
-    try:
-        data = await HybridCrawler.hybrid_parsing_single_video(url, minimal=True)
-    except Exception as e:
-        code = 400
-        return ErrorResponseModel(code=code, message=str(e), router=request.url.path, params=dict(request.query_params))
-
-    # 开始下载文件/Start downloading files
-    try:
-        data_type = data.get('type')
-        platform = data.get('platform')
-        aweme_id = data.get('aweme_id')
-        file_prefix = config.get("API").get("Download_File_Prefix") if prefix else ''
-        download_path = os.path.join(config.get("API").get("Download_Path"), f"{platform}_{data_type}")
-
-        # 确保目录存在/Ensure the directory exists
-        os.makedirs(download_path, exist_ok=True)
-
-        # 下载视频文件/Download video file
-        if data_type == 'video':
-            file_name = f"{file_prefix}{platform}_{aweme_id}.mp4" if not with_watermark else f"{file_prefix}{platform}_{aweme_id}_watermark.mp4"
-            url = data.get('video_data').get('nwm_video_url_HQ') if not with_watermark else data.get('video_data').get(
-                'wm_video_url_HQ')
-            file_path = os.path.join(download_path, file_name)
-
-            # 判断文件是否存在，存在就直接返回
-            if os.path.exists(file_path):
-                return FileResponse(path=file_path, media_type='video/mp4', filename=file_name)
-
-            # 获取视频文件
-            __headers = await HybridCrawler.TikTokWebCrawler.get_tiktok_headers() if platform == 'tiktok' else await HybridCrawler.DouyinWebCrawler.get_douyin_headers()
-            # response = await fetch_data(url, headers=__headers)
-
-            success = await fetch_data_stream(url, request, headers=__headers, file_path=file_path)
-            if not success:
-                raise HTTPException(
-                    status_code=500,
-                    detail="An error occurred while fetching data"
-                )
-
-            # # 保存文件
-            # async with aiofiles.open(file_path, 'wb') as out_file:
-            #     await out_file.write(response.content)
-
-            # 返回文件内容
-            return FileResponse(path=file_path, filename=file_name, media_type="video/mp4")
-
-        # 下载图片文件/Download image file
-        elif data_type == 'image':
-            # 压缩文件属性/Compress file properties
-            zip_file_name = f"{file_prefix}{platform}_{aweme_id}_images.zip" if not with_watermark else f"{file_prefix}{platform}_{aweme_id}_images_watermark.zip"
-            zip_file_path = os.path.join(download_path, zip_file_name)
-
-            # 判断文件是否存在，存在就直接返回、
-            if os.path.exists(zip_file_path):
-                return FileResponse(path=zip_file_path, filename=zip_file_name, media_type="application/zip")
-
-            # 获取图片文件/Get image file
-            urls = data.get('image_data').get('no_watermark_image_list') if not with_watermark else data.get(
-                'image_data').get('watermark_image_list')
-            image_file_list = []
-            for url in urls:
-                # 请求图片文件/Request image file
-                response = await fetch_data(url)
-                index = int(urls.index(url))
-                content_type = response.headers.get('content-type')
-                file_format = content_type.split('/')[1]
-                file_name = f"{file_prefix}{platform}_{aweme_id}_{index + 1}.{file_format}" if not with_watermark else f"{file_prefix}{platform}_{aweme_id}_{index + 1}_watermark.{file_format}"
-                file_path = os.path.join(download_path, file_name)
-                image_file_list.append(file_path)
-
-                # 保存文件/Save file
-                async with aiofiles.open(file_path, 'wb') as out_file:
-                    await out_file.write(response.content)
-
-            # 压缩文件/Compress file
-            with zipfile.ZipFile(zip_file_path, 'w') as zip_file:
-                for image_file in image_file_list:
-                    zip_file.write(image_file, os.path.basename(image_file))
-
-            # 返回压缩文件/Return compressed file
-            return FileResponse(path=zip_file_path, filename=zip_file_name, media_type="application/zip")
-
-    # 异常处理/Exception handling
-    except Exception as e:
-        print(e)
-        code = 400
-        return ErrorResponseModel(code=code, message=str(e), router=request.url.path, params=dict(request.query_params))
+    return await download_file_common(request, url, prefix, with_watermark, config)

@@ -1,11 +1,13 @@
 from typing import List
 
 from fastapi import APIRouter, Body, Query, Request, HTTPException  # 导入FastAPI组件
+from starlette.responses import FileResponse
+
 from app.api.models.APIResponseModel import ResponseModel, ErrorResponseModel  # 导入响应模型
 
 from crawlers.douyin.web.web_crawler import DouyinWebCrawler  # 导入抖音Web爬虫
 from crawlers.utils.utils import update_ttwid_in_cookie
-from app.api.endpoints.download import fetch_data_stream  # 新增导入
+from app.api.endpoints.download import fetch_data_stream, download_file_common, config  # 新增导入
 import os
 import aiofiles
 import httpx
@@ -15,6 +17,7 @@ import random
 import json
 from datetime import datetime
 import logging
+import shutil
 
 
 router = APIRouter()
@@ -1170,49 +1173,54 @@ async def batch_download_by_txt(request: Request):
             desc = video.get('desc', '')
             create_time = video.get('create_time', '')
             logger.info(f"[{idx+1}/{len(video_list)}] 开始处理aweme_id: {aweme_id}")
-            # 获取视频详细信息
+            # 生成安全文件名
+            safe_desc = desc if desc else aweme_id
+            safe_desc = safe_desc.replace('/', '_').replace('\\', '_').replace(' ', '_')
+            # 格式化创建时间
             try:
-                detail = await DouyinWebCrawler.fetch_one_video(aweme_id)
-                logger.info(f"aweme_id: {aweme_id} 视频详情获取成功")
-                # 获取无水印视频地址
-                video_url = None
-                if 'aweme_detail' in detail and 'video' in detail['aweme_detail']:
-                    play_addr = detail['aweme_detail']['video'].get('play_addr', {})
-                    # 优先取最高画质
-                    if 'url_list' in play_addr and play_addr['url_list']:
-                        video_url = play_addr['url_list'][0]
-                if not video_url:
-                    logger.warning(f"aweme_id: {aweme_id} 未获取到视频地址")
-                    download_results.append({"aweme_id": aweme_id, "status": "fail", "reason": "未获取到视频地址"})
-                    continue
-                # 生成安全文件名
-                safe_desc = desc if desc else aweme_id
-                safe_desc = safe_desc.replace('/', '_').replace('\\', '_').replace(' ', '_')
-                # 格式化创建时间
-                try:
-                    if create_time:
-                        dt_str = datetime.fromtimestamp(int(create_time)).strftime('%Y%m%d_%H%M%S')
-                    else:
-                        dt_str = 'unknown'
-                except Exception as e_dt:
-                    logger.warning(f"aweme_id: {aweme_id} 创建时间格式化失败: {e_dt}")
+                if create_time:
+                    dt_str = datetime.fromtimestamp(int(create_time)).strftime('%Y%m%d_%H%M%S')
+                else:
                     dt_str = 'unknown'
-                filename = f"{safe_desc}_{dt_str}.MP4"
-                file_path = os.path.join(download_dir, filename)
-                # 跳过已存在文件
-                if os.path.exists(file_path):
-                    logger.info(f"aweme_id: {aweme_id} 文件已存在: {filename}")
-                    download_results.append({"aweme_id": aweme_id, "status": "exists", "file": filename})
-                    continue
-                # 下载
-                logger.info(f"aweme_id: {aweme_id} 开始下载: {video_url} -> {file_path}")
-                success = await fetch_data_stream(video_url, request, headers=None, file_path=file_path)
-                if success:
+            except Exception as e_dt:
+                logger.warning(f"aweme_id: {aweme_id} 创建时间格式化失败: {e_dt}")
+                dt_str = 'unknown'
+            filename = f"{safe_desc}_{dt_str}.MP4"
+            file_path = os.path.join(download_dir, filename)
+            # 跳过已存在文件
+            if os.path.exists(file_path):
+                logger.info(f"aweme_id: {aweme_id} 文件已存在: {filename}")
+                download_results.append({"aweme_id": aweme_id, "status": "exists", "file": filename})
+                continue
+            # 拼接视频链接
+            video_url = f"https://www.douyin.com/video/{aweme_id}"
+            try:
+                import random
+                import asyncio
+                
+                # 随机停顿1-3秒
+                sleep_time = random.uniform(1, 3)
+                logger.info(f"aweme_id: {aweme_id} 随机停顿 {sleep_time:.2f} 秒")
+                await asyncio.sleep(sleep_time)
+                # 只保存文件，不返回 FileResponse
+                result = await download_file_common(request, video_url, prefix=True, with_watermark=False, config=config)
+                if isinstance(result, FileResponse):
+                    # FileResponse: 拷贝文件到目标路径
+                    src_path = result.path
+                    shutil.copyfile(src_path, file_path)
                     logger.info(f"aweme_id: {aweme_id} 下载成功: {filename}")
                     download_results.append({"aweme_id": aweme_id, "status": "success", "file": filename})
+                elif isinstance(result, bytes):
+                    async with aiofiles.open(file_path, 'wb') as f:
+                        await f.write(result)
+                    logger.info(f"aweme_id: {aweme_id} 下载成功: {filename}")
+                    download_results.append({"aweme_id": aweme_id, "status": "success", "file": filename})
+                elif hasattr(result, 'code') and getattr(result, 'code', None) != 200:
+                    logger.error(f"aweme_id: {aweme_id} 下载失败: {getattr(result, 'message', '未知错误')}")
+                    download_results.append({"aweme_id": aweme_id, "status": "fail", "reason": getattr(result, 'message', '未知错误')})
                 else:
-                    logger.error(f"aweme_id: {aweme_id} 下载失败")
-                    download_results.append({"aweme_id": aweme_id, "status": "fail", "reason": "下载失败"})
+                    logger.info(f"aweme_id: {aweme_id} 下载完成: {filename}")
+                    download_results.append({"aweme_id": aweme_id, "status": "success", "file": filename})
             except Exception as e:
                 logger.error(f"aweme_id: {aweme_id} 处理异常: {e}")
                 download_results.append({"aweme_id": aweme_id, "status": "fail", "reason": str(e)})
