@@ -5,13 +5,16 @@ from app.api.models.APIResponseModel import ResponseModel, ErrorResponseModel  #
 
 from crawlers.douyin.web.web_crawler import DouyinWebCrawler  # 导入抖音Web爬虫
 from crawlers.utils.utils import update_ttwid_in_cookie
-
+from app.api.endpoints.download import fetch_data_stream  # 新增导入
 import os
 import aiofiles
 import httpx
 import yaml
 import asyncio
 import random
+import json
+from datetime import datetime
+import logging
 
 
 router = APIRouter()
@@ -1078,27 +1081,17 @@ async def get_all_webcast_id(request: Request,
         raise HTTPException(status_code=status_code, detail=detail.dict())
 
 
-# 一键下载用户主页全部视频
+# 一键下载用户主页全部视频（优化为仅返回视频信息列表）
 @router.post("/download_user_all_videos", response_model=ResponseModel, summary="一键下载用户主页全部视频/Batch download all user homepage videos")
 async def download_user_all_videos(request: Request, url: str = Body(..., embed=True, description="用户主页链接/User homepage url")):
     """
-    一键下载用户主页全部视频
-    1. 生成ttwid
-    2. 获取sec_user_id
-    3. 分页获取所有aweme_id
-    4. 下载所有视频到本地
+    一键下载用户主页全部视频（仅返回视频信息列表，不下载）
+    1. 获取sec_user_id
+    2. 分页获取所有aweme_id及简要信息
+    3. 返回视频信息JSON数组
     """
     try:
-        # 1. 生成 ttwid（如有必要，部分接口可能用不到）
-        # ttwid = (await DouyinWebCrawler.gen_ttwid())["ttwid"]
-        # ttwid = "1%7C87VqQwWnWrKR_A85hkZLcVIBb4lFtryFsSKv98SjdDw%7C1750898330%7Cc47363af03d87bea1865ce232ff8ee59f9158956f8575868552be6941c858b99"
-
-        # 写入 ttwid 到根目录 config.yaml
-        # config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'crawlers', 'douyin', 'web', 'config.yaml')
-        # update_ttwid_in_cookie(config_path, ["TokenManager", "douyin", "headers", "Cookie"], ttwid)
-
-        # print("ttwid：", ttwid)
-        # 2. 获取 sec_user_id
+        # 1. 获取 sec_user_id
         sec_user_id_data = await DouyinWebCrawler.get_sec_user_id(url)
         if isinstance(sec_user_id_data, dict):
             sec_user_id = sec_user_id_data.get("sec_user_id") or sec_user_id_data.get("data") or sec_user_id_data.get("result") or sec_user_id_data
@@ -1107,48 +1100,124 @@ async def download_user_all_videos(request: Request, url: str = Body(..., embed=
         if not sec_user_id:
             return ErrorResponseModel(code=400, message="未能提取sec_user_id", router=request.url.path, params={"url": url})
 
-        # 3. 分页获取所有aweme_id
+        # 2. 分页获取所有aweme_id及简要信息
         video_brief_list = []
         max_cursor = 0
         while True:
             delay = random.uniform(0, 1)
-            print(f"[延迟开始] 本次延迟 {delay:.3f} 秒")
             await asyncio.sleep(delay)
-            print(f"[延迟结束] ")
             data = await DouyinWebCrawler.fetch_user_post_videos(sec_user_id, max_cursor, 100)
             aweme_list = data.get("aweme_list", [])
             if not aweme_list:
                 break
-            current_count = len(aweme_list)
             for item in aweme_list:
                 aweme_id = item.get("aweme_id", "")
                 desc = item.get("desc", "")
                 item_title = item.get("item_title", "")
+                create_time = item.get("create_time", "")
                 video_brief_list.append({
                     "aweme_id": aweme_id,
                     "desc": desc,
-                    "item_title": item_title
+                    "item_title": item_title,
+                    "create_time": create_time
                 })
-            print(f"[进度] 本次获得 {current_count} 个视频，总计 {len(video_brief_list)} 个视频")
             if not data.get("has_more"):
                 break
             max_cursor = data.get("max_cursor", 0)
 
-        # 打印获得的用户视频列表
-        print("用户视频列表：", video_brief_list)
-
-        # 将视频信息写入文件
-        import json
-
-        # 构建文件路径
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        filename = f"{sec_user_id}.txt"
-        filepath = os.path.join(current_dir, filename)
-
-        # 将info写入文件
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(video_brief_list, f, ensure_ascii=False, indent=2)
-
+        # 3. 返回视频信息JSON数组
         return ResponseModel(code=200, router=request.url.path, data=video_brief_list)
     except Exception as e:
         return ErrorResponseModel(code=500, message=str(e), router=request.url.path, params={"url": url})
+
+
+# 新增：批量解析txt并下载视频到指定目录
+@router.post("/batch_download_by_txt", response_model=ResponseModel, summary="批量解析txt并下载视频/Bulk download videos by txt info")
+async def batch_download_by_txt(request: Request):
+    """
+    解析当前目录下MS4wLjABAAAAtHXkrFr8fkv6ehPSw98yu2ZzwHR9iWziaOZFVQkCNy4.txt，
+    逐个下载视频到/download_video/MS4wLjABAAAAtHXkrFr8fkv6ehPSw98yu2ZzwHR9iWziaOZFVQkCNy4/，
+    文件名为{desc}_{创建时间}.MP4。
+    """
+    logger = logging.getLogger("batch_download_by_txt")
+    try:
+        logger.info("开始批量下载任务")
+        # 1. 读取txt文件
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        txt_filename = "MS4wLjABAAAAtHXkrFr8fkv6ehPSw98yu2ZzwHR9iWziaOZFVQkCNy4.txt"
+        txt_path = os.path.join(current_dir, txt_filename)
+        logger.info(f"尝试读取txt文件: {txt_path}")
+        if not os.path.exists(txt_path):
+            logger.error("未找到txt文件")
+            return ErrorResponseModel(code=404, message="未找到txt文件", router=request.url.path, params={})
+        with open(txt_path, 'r', encoding='utf-8') as f:
+            video_list = json.load(f)
+        logger.info(f"读取到{len(video_list) if isinstance(video_list, list) else '未知'}条视频信息")
+        if not isinstance(video_list, list):
+            logger.error("txt内容格式错误")
+            return ErrorResponseModel(code=400, message="txt内容格式错误", router=request.url.path, params={})
+
+        # 2. 创建下载目录
+        download_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'download_video', 'MS4wLjABAAAAtHXkrFr8fkv6ehPSw98yu2ZzwHR9iWziaOZFVQkCNy4')
+        logger.info(f"准备创建下载目录: {download_dir}")
+        os.makedirs(download_dir, exist_ok=True)
+        logger.info("下载目录已创建或已存在")
+
+        # 3. 依次下载
+        download_results = []
+        for idx, video in enumerate(video_list):
+            aweme_id = video.get('aweme_id')
+            desc = video.get('desc', '')
+            create_time = video.get('create_time', '')
+            logger.info(f"[{idx+1}/{len(video_list)}] 开始处理aweme_id: {aweme_id}")
+            # 获取视频详细信息
+            try:
+                detail = await DouyinWebCrawler.fetch_one_video(aweme_id)
+                logger.info(f"aweme_id: {aweme_id} 视频详情获取成功")
+                # 获取无水印视频地址
+                video_url = None
+                if 'aweme_detail' in detail and 'video' in detail['aweme_detail']:
+                    play_addr = detail['aweme_detail']['video'].get('play_addr', {})
+                    # 优先取最高画质
+                    if 'url_list' in play_addr and play_addr['url_list']:
+                        video_url = play_addr['url_list'][0]
+                if not video_url:
+                    logger.warning(f"aweme_id: {aweme_id} 未获取到视频地址")
+                    download_results.append({"aweme_id": aweme_id, "status": "fail", "reason": "未获取到视频地址"})
+                    continue
+                # 生成安全文件名
+                safe_desc = desc if desc else aweme_id
+                safe_desc = safe_desc.replace('/', '_').replace('\\', '_').replace(' ', '_')
+                # 格式化创建时间
+                try:
+                    if create_time:
+                        dt_str = datetime.fromtimestamp(int(create_time)).strftime('%Y%m%d_%H%M%S')
+                    else:
+                        dt_str = 'unknown'
+                except Exception as e_dt:
+                    logger.warning(f"aweme_id: {aweme_id} 创建时间格式化失败: {e_dt}")
+                    dt_str = 'unknown'
+                filename = f"{safe_desc}_{dt_str}.MP4"
+                file_path = os.path.join(download_dir, filename)
+                # 跳过已存在文件
+                if os.path.exists(file_path):
+                    logger.info(f"aweme_id: {aweme_id} 文件已存在: {filename}")
+                    download_results.append({"aweme_id": aweme_id, "status": "exists", "file": filename})
+                    continue
+                # 下载
+                logger.info(f"aweme_id: {aweme_id} 开始下载: {video_url} -> {file_path}")
+                success = await fetch_data_stream(video_url, request, headers=None, file_path=file_path)
+                if success:
+                    logger.info(f"aweme_id: {aweme_id} 下载成功: {filename}")
+                    download_results.append({"aweme_id": aweme_id, "status": "success", "file": filename})
+                else:
+                    logger.error(f"aweme_id: {aweme_id} 下载失败")
+                    download_results.append({"aweme_id": aweme_id, "status": "fail", "reason": "下载失败"})
+            except Exception as e:
+                logger.error(f"aweme_id: {aweme_id} 处理异常: {e}")
+                download_results.append({"aweme_id": aweme_id, "status": "fail", "reason": str(e)})
+        logger.info(f"全部处理完成，共{len(download_results)}条")
+        return ResponseModel(code=200, router=request.url.path, data=download_results)
+    except Exception as e:
+        logger.error(f"批量下载任务异常: {e}")
+        return ErrorResponseModel(code=500, message=str(e), router=request.url.path, params={})

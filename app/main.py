@@ -45,6 +45,13 @@ from pywebio.platform.fastapi import asgi_app
 # OS
 import os
 
+# 日志配置：输出INFO及以上到控制台
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+
 # YAML
 import yaml
 
