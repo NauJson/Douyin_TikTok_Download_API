@@ -1132,6 +1132,9 @@ async def fetch_user_all_videos_brief(
             await asyncio.sleep(delay)
             data = await DouyinWebCrawler.fetch_user_post_videos(sec_user_id, max_cursor, count)
             aweme_list = data.get("aweme_list", [])
+            # 新增进度日志
+            logger = logging.getLogger("fetch_user_all_videos_brief")
+            logger.info(f"已解析{len(video_brief_list)}个，本次正在解析{len(aweme_list)}个")
             if not aweme_list:
                 break
             for item in aweme_list:
@@ -1225,13 +1228,18 @@ async def batch_download_by_txt(request: Request):
         os.makedirs(download_dir, exist_ok=True)
         logger.info("下载目录已创建或已存在")
 
+        # 新增：获取总数
+        total_count = len(video_list)
+        logger.info(f"本次共需下载 {total_count} 个视频")
+
         # 3. 依次下载
         download_results = []
         for idx, video in enumerate(video_list):
+            logger.info(f"正在下载第 {idx+1}/{total_count} 个视频...")
             aweme_id = video.get('aweme_id')
             desc = video.get('desc', '')
             create_time = video.get('create_time', '')
-            logger.info(f"[{idx+1}/{len(video_list)}] 开始处理aweme_id: {aweme_id}")
+            logger.info(f"[{idx+1}/{total_count}] 开始处理aweme_id: {aweme_id}")
             # 生成安全文件名
             safe_desc = desc if desc else aweme_id
             safe_desc = safe_desc.replace('/', '_').replace('\\', '_').replace(' ', '_')
