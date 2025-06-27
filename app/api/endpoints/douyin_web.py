@@ -18,6 +18,7 @@ import json
 from datetime import datetime
 import logging
 import shutil
+import re
 
 
 router = APIRouter()
@@ -1084,14 +1085,34 @@ async def get_all_webcast_id(request: Request,
         raise HTTPException(status_code=status_code, detail=detail.dict())
 
 
-# 一键下载用户主页全部视频（优化为仅返回视频信息列表）
-@router.post("/download_user_all_videos", response_model=ResponseModel, summary="一键下载用户主页全部视频/Batch download all user homepage videos")
-async def download_user_all_videos(request: Request, url: str = Body(..., embed=True, description="用户主页链接/User homepage url")):
+# 获取用户主页全部视频信息（仅返回视频信息列表，不下载）
+@router.post("/fetch_user_all_videos_brief", response_model=ResponseModel, summary="获取用户主页全部视频信息（仅返回视频信息列表，不下载，可选是否保存到本地）/Fetch all user homepage video info (only return info list, optionally save to local)")
+async def fetch_user_all_videos_brief(
+    request: Request,
+    url: str = Body(..., embed=True, description="用户主页链接/User homepage url"),
+    save_to_local: bool = Body(True, embed=True, description="是否保存到本地/Whether to save to local file (default: True)"),
+    count: int = Body(5, embed=True, description="每页数量/Number per page (default: 5)")
+):
     """
-    一键下载用户主页全部视频（仅返回视频信息列表，不下载）
-    1. 获取sec_user_id
-    2. 分页获取所有aweme_id及简要信息
-    3. 返回视频信息JSON数组
+    # [中文]
+    ### 用途:
+    - 获取用户主页全部视频信息（仅返回视频信息列表，不下载，可选是否保存到本地）
+    ### 参数:
+    - url: 用户主页链接
+    - save_to_local: 是否保存到本地，默认为 True
+    - count: 每页数量，默认为 5
+    ### 返回:
+    - 视频信息JSON数组
+
+    # [English]
+    ### Purpose:
+    - Fetch all user homepage video info (only return info list, optionally save to local)
+    ### Parameters:
+    - url: User homepage url
+    - save_to_local: Whether to save to local file (default: True)
+    - count: Number per page (default: 5)
+    ### Return:
+    - Video info JSON array
     """
     try:
         # 1. 获取 sec_user_id
@@ -1109,7 +1130,7 @@ async def download_user_all_videos(request: Request, url: str = Body(..., embed=
         while True:
             delay = random.uniform(0, 1)
             await asyncio.sleep(delay)
-            data = await DouyinWebCrawler.fetch_user_post_videos(sec_user_id, max_cursor, 100)
+            data = await DouyinWebCrawler.fetch_user_post_videos(sec_user_id, max_cursor, count)
             aweme_list = data.get("aweme_list", [])
             if not aweme_list:
                 break
@@ -1118,17 +1139,55 @@ async def download_user_all_videos(request: Request, url: str = Body(..., embed=
                 desc = item.get("desc", "")
                 item_title = item.get("item_title", "")
                 create_time = item.get("create_time", "")
+                # 新增：将 create_time 转换为 'YYYY-MM-DD' 格式，兼容字符串和整数
+                if create_time:
+                    try:
+                        ts = int(float(create_time))
+                        # 判断时间戳是否为10位（秒）还是13位（毫秒）
+                        if ts > 1e12:
+                            ts = ts // 1000
+                        create_time_fmt = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+                    except Exception:
+                        create_time_fmt = str(create_time)
+                else:
+                    create_time_fmt = ''
                 video_brief_list.append({
+                    "create_time": create_time_fmt,
                     "aweme_id": aweme_id,
                     "desc": desc,
                     "item_title": item_title,
-                    "create_time": create_time
                 })
             if not data.get("has_more"):
                 break
             max_cursor = data.get("max_cursor", 0)
 
-        # 3. 返回视频信息JSON数组
+        # 3. 可选：保存到本地 txt 文件
+        if save_to_local:
+            # 新增：优先用第一个视频的作者nickname作为文件名
+            if video_brief_list and isinstance(video_brief_list, list):
+                # 重新获取原始aweme_list第一个元素的作者nickname
+                first_aweme = None
+                if 'aweme_list' in data and isinstance(data['aweme_list'], list) and len(data['aweme_list']) > 0:
+                    first_aweme = data['aweme_list'][0]
+                if first_aweme and 'author' in first_aweme and 'nickname' in first_aweme['author']:
+                    file_nickname = first_aweme['author']['nickname']
+                else:
+                    file_nickname = sec_user_id
+            else:
+                file_nickname = sec_user_id
+            # 文件名去除特殊字符
+            file_nickname = re.sub(r'[\\/:*?"<>|\s]', '_', str(file_nickname))
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            # 新增：在当前目录下创建"作品集"文件夹
+            collection_dir = os.path.join(current_dir, "作品集")
+            os.makedirs(collection_dir, exist_ok=True)
+            txt_filename = f"{file_nickname}.txt"
+            txt_path = os.path.join(collection_dir, txt_filename)
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                for brief in video_brief_list:
+                    f.write(json.dumps(brief, ensure_ascii=False) + '\n')
+
+        # 4. 返回视频信息JSON数组
         return ResponseModel(code=200, router=request.url.path, data=video_brief_list)
     except Exception as e:
         return ErrorResponseModel(code=500, message=str(e), router=request.url.path, params={"url": url})
@@ -1199,11 +1258,30 @@ async def batch_download_by_txt(request: Request):
                 import asyncio
                 
                 # 随机停顿1-3秒
-                sleep_time = random.uniform(1, 5)
+                sleep_time = random.uniform(10, 15)
                 logger.info(f"aweme_id: {aweme_id} 随机停顿 {sleep_time:.2f} 秒")
                 await asyncio.sleep(sleep_time)
                 # 只保存文件，不返回 FileResponse
-                result = await download_file_common(request, video_url, prefix=True, with_watermark=False, config=config)
+                # 重试机制：最多重试3次，每次间隔5-10秒
+                max_retries = 3
+                retry_count = 0
+                result = None
+                
+                while retry_count < max_retries:
+                    try:
+                        result = await download_file_common(request, video_url, prefix=True, with_watermark=False, config=config)
+                        # 如果成功获取结果，跳出重试循环
+                        break
+                    except Exception as e:
+                        retry_count += 1
+                        if retry_count >= max_retries:
+                            logger.error(f"aweme_id: {aweme_id} 重试{max_retries}次后仍然失败: {e}")
+                            raise e
+                        
+                        # 随机等待5-10秒
+                        sleep_time = random.uniform(20, 30)
+                        logger.warning(f"aweme_id: {aweme_id} 第{retry_count}次重试失败，等待{sleep_time:.2f}秒后重试: {e}")
+                        await asyncio.sleep(sleep_time)
                 if isinstance(result, FileResponse):
                     # FileResponse: 拷贝文件到目标路径
                     src_path = result.path
