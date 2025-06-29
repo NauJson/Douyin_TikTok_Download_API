@@ -4,9 +4,10 @@ from fastapi import APIRouter, Body, Query, Request, HTTPException  # 导入Fast
 from starlette.responses import FileResponse
 
 from app.api.models.APIResponseModel import ResponseModel, ErrorResponseModel  # 导入响应模型
-
+from app.api.endpoints.analyzer import analyze_video_file, ModelConfig
 from crawlers.douyin.web.web_crawler import DouyinWebCrawler  # 导入抖音Web爬虫
 from crawlers.utils.utils import update_ttwid_in_cookie
+from crawlers.utils.utils import extract_valid_urls
 from app.api.endpoints.download import fetch_data_stream, download_file_common, config  # 新增导入
 import os
 import aiofiles
@@ -1200,30 +1201,37 @@ async def fetch_user_all_videos_brief(
 @router.post("/batch_download_by_txt", response_model=ResponseModel, summary="批量解析txt并下载视频/Bulk download videos by txt info")
 async def batch_download_by_txt(request: Request):
     """
-    解析当前目录下MS4wLjABAAAAtHXkrFr8fkv6ehPSw98yu2ZzwHR9iWziaOZFVQkCNy4.txt，
-    逐个下载视频到/download_video/MS4wLjABAAAAtHXkrFr8fkv6ehPSw98yu2ZzwHR9iWziaOZFVQkCNy4/，
+    解析app/api/endpoints/作品集/张雪峰老师.txt，
+    逐个下载视频到/download_video/张雪峰老师/，
     文件名为{desc}_{创建时间}.MP4。
     """
     logger = logging.getLogger("batch_download_by_txt")
     try:
         logger.info("开始批量下载任务")
         # 1. 读取txt文件
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        txt_filename = "MS4wLjABAAAAtHXkrFr8fkv6ehPSw98yu2ZzwHR9iWziaOZFVQkCNy4.txt"
-        txt_path = os.path.join(current_dir, txt_filename)
+        txt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "作品集", "张雪峰老师.txt")
         logger.info(f"尝试读取txt文件: {txt_path}")
         if not os.path.exists(txt_path):
             logger.error("未找到txt文件")
             return ErrorResponseModel(code=404, message="未找到txt文件", router=request.url.path, params={})
+        video_list = []
         with open(txt_path, 'r', encoding='utf-8') as f:
-            video_list = json.load(f)
-        logger.info(f"读取到{len(video_list) if isinstance(video_list, list) else '未知'}条视频信息")
-        if not isinstance(video_list, list):
-            logger.error("txt内容格式错误")
-            return ErrorResponseModel(code=400, message="txt内容格式错误", router=request.url.path, params={})
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    video = json.loads(line)
+                    video_list.append(video)
+                except Exception as e:
+                    logger.warning(f"解析行失败: {e}, 内容: {line}")
+        logger.info(f"读取到{len(video_list)}条视频信息")
+        if not isinstance(video_list, list) or not video_list:
+            logger.error("txt内容格式错误或无有效数据")
+            return ErrorResponseModel(code=400, message="txt内容格式错误或无有效数据", router=request.url.path, params={})
 
         # 2. 创建下载目录
-        download_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'download_video', 'MS4wLjABAAAAtHXkrFr8fkv6ehPSw98yu2ZzwHR9iWziaOZFVQkCNy4')
+        download_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'download_video', '张雪峰老师')
         logger.info(f"准备创建下载目录: {download_dir}")
         os.makedirs(download_dir, exist_ok=True)
         logger.info("下载目录已创建或已存在")
@@ -1244,14 +1252,7 @@ async def batch_download_by_txt(request: Request):
             safe_desc = desc if desc else aweme_id
             safe_desc = safe_desc.replace('/', '_').replace('\\', '_').replace(' ', '_')
             # 格式化创建时间
-            try:
-                if create_time:
-                    dt_str = datetime.fromtimestamp(int(create_time)).strftime('%Y%m%d_%H%M%S')
-                else:
-                    dt_str = 'unknown'
-            except Exception as e_dt:
-                logger.warning(f"aweme_id: {aweme_id} 创建时间格式化失败: {e_dt}")
-                dt_str = 'unknown'
+            dt_str = str(create_time).replace('-', '') if create_time else 'unknown'
             filename = f"{safe_desc}_{dt_str}.MP4"
             file_path = os.path.join(download_dir, filename)
             # 跳过已存在文件
@@ -1264,36 +1265,28 @@ async def batch_download_by_txt(request: Request):
             try:
                 import random
                 import asyncio
-                
                 # 随机停顿1-3秒
                 sleep_time = random.uniform(10, 15)
                 logger.info(f"aweme_id: {aweme_id} 随机停顿 {sleep_time:.2f} 秒")
                 await asyncio.sleep(sleep_time)
-                # 只保存文件，不返回 FileResponse
                 # 重试机制：最多重试3次，每次间隔5-10秒
                 max_retries = 3
                 retry_count = 0
                 result = None
-                
                 while retry_count < max_retries:
                     try:
                         result = await download_file_common(request, video_url, prefix=True, with_watermark=False, config=config)
-                        # 如果成功获取结果，跳出重试循环
                         break
                     except Exception as e:
                         retry_count += 1
                         if retry_count >= max_retries:
                             logger.error(f"aweme_id: {aweme_id} 重试{max_retries}次后仍然失败: {e}")
                             raise e
-                        
-                        # 随机等待5-10秒
                         sleep_time = random.uniform(20, 30)
                         logger.warning(f"aweme_id: {aweme_id} 第{retry_count}次重试失败，等待{sleep_time:.2f}秒后重试: {e}")
                         await asyncio.sleep(sleep_time)
                 if isinstance(result, FileResponse):
-                    # FileResponse: 拷贝文件到目标路径
                     src_path = result.path
-                    # shutil.copyfile(src_path, file_path)
                     logger.info(f"aweme_id: {aweme_id} 下载成功: {filename}")
                     download_results.append({"aweme_id": aweme_id, "status": "success", "file": filename})
                 elif isinstance(result, bytes):
@@ -1315,3 +1308,65 @@ async def batch_download_by_txt(request: Request):
     except Exception as e:
         logger.error(f"批量下载任务异常: {e}")
         return ErrorResponseModel(code=500, message=str(e), router=request.url.path, params={})
+
+
+# 新增：解析单个抖音视频并分析
+@router.post("/analyze_single_video", response_model=ResponseModel, summary="解析单个抖音视频并输出总结/Analyze single Douyin video and output summary")
+async def analyze_single_video(request: Request, url: str = Body(..., embed=True, description="抖音分享链接/Douyin share link")):
+    """
+    # [中文]
+    ### 用途:
+    - 解析单个抖音视频，自动下载、转写、分析并输出总结
+    ### 参数:
+    - url: 抖音分享链接
+    ### 返回:
+    - 分析总结内容
+    """
+    import tempfile
+    import importlib.util
+    import sys
+    import os
+    try:
+        # 1. 解析地址，提取有效URL
+        valid_url = extract_valid_urls(url)
+        if not valid_url:
+            return ErrorResponseModel(code=400, message="无效的抖音链接", router=request.url.path, params={"url": url})
+        
+        # 2. 获取aweme_id
+        aweme_id = await DouyinWebCrawler.get_aweme_id(valid_url)
+        if not aweme_id:
+            return ErrorResponseModel(code=400, message="无法获取视频ID", router=request.url.path, params={"url": url})
+        
+        # 3. 下载视频到临时文件
+        temp_dir = tempfile.gettempdir()
+        temp_video_path = os.path.join(temp_dir, f"douyin_{aweme_id}.mp4")
+        
+
+        
+        # 直接用download_file_common下载到指定路径
+        from app.api.endpoints.download import download_file_common, config
+        class DummyRequest:
+            async def is_disconnected(self):
+                return False
+            url = type('url', (), {'path': '/analyze_single_video'})()
+            query_params = {}
+        dummy_request = DummyRequest()
+        
+        # download_file_common返回FileResponse，需先下载到本地
+        result = await download_file_common(dummy_request, valid_url, prefix=False, with_watermark=False, config=config)
+        if hasattr(result, 'path') and os.path.exists(result.path):
+            temp_video_path = result.path
+        elif hasattr(result, 'code') and getattr(result, 'code', None) != 200:
+            return result
+        else:
+            return ErrorResponseModel(code=500, message="视频下载失败", router=request.url.path, params={"url": url})
+        
+        # 4. 调用 analyzer.py 的 analyze_video_file 方法
+        # 默认用 OLLAMA_QWEN2_5_7B
+        model_config = ModelConfig.OLLAMA_QWEN2_5_7B
+        summary = analyze_video_file(temp_video_path, model_config)
+        
+        # 5. 返回分析结果
+        return ResponseModel(code=200, router=request.url.path, data=summary)
+    except Exception as e:
+        return ErrorResponseModel(code=500, message=str(e), router=request.url.path, params={"url": url})
