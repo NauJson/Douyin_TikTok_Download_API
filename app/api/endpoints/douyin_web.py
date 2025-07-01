@@ -1382,4 +1382,4 @@ async def hello():
     ### 返回:
     - helloworld字符串
     """
-    return "helloworld"
+    return {"message": "helloworld"}
