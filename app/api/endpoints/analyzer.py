@@ -252,10 +252,18 @@ def analyze_video_file(file_path, model_config):
     import shutil
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     audio_path = os.path.join(AUDIO_DIR, base_name + ".wav")
+    output_path = os.path.join(OUTPUT_DIR, base_name + ".md")
     try:
         extract_audio(file_path, audio_path)
         transcript = transcribe_audio(audio_path)
         summary = analyze_with_model(transcript, model_config)
+        # 写入 markdown 文件
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(f"# 视频分析报告 - {base_name}\n\n")
+            f.write("## 🎧 音频转写内容：\n\n")
+            f.write(transcript + "\n\n")
+            f.write("## 🤖 大模型分析结果：\n\n")
+            f.write(summary)
         return summary
     finally:
         # 删除音频和视频文件
