@@ -1370,3 +1370,16 @@ async def analyze_single_video(request: Request, url: str = Body(..., embed=True
         return ResponseModel(code=200, router=request.url.path, data=summary)
     except Exception as e:
         return ErrorResponseModel(code=500, message=str(e), router=request.url.path, params={"url": url})
+
+
+# 新增：返回helloworld的接口
+@router.get("/hello", summary="测试接口，返回helloworld")
+async def hello():
+    """
+    # [中文]
+    ### 用途:
+    - 测试接口，直接返回helloworld
+    ### 返回:
+    - helloworld字符串
+    """
+    return "helloworld"
