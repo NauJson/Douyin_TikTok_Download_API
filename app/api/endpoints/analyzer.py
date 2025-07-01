@@ -75,15 +75,14 @@ def transcribe_audio(audio_path):
 
 def analyze_with_ollama(transcript_text, model_name):
     prompt = f"""
-请根据以下视频音频转写内容进行分析：
+请根据以下文字内容进行优化：
 
 {transcript_text}
 
 要求输出：
-1. 视频内容摘要（不超过100字）
-2. 提取3个核心观点
-3. 给出3个合适的短视频话题标签（如 #健康 #亲子 #创业）
-4. 给出一句提升建议（以\"建议你……\"开头）
+1. 仅根据上下文，调整分语言隔符
+2. 为确保语义通顺情况下，可以调整部分单词
+3. 【禁止】禁止添加任何其他内容
 """
     print("[调用 Ollama 模型分析]")
     for attempt in range(10):
